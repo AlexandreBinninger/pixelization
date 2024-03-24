@@ -4,7 +4,7 @@ use super::super::Pixelizer;
 use kmeans_colors::{get_kmeans, Kmeans};
 use palette::{rgb::Rgb, FromColor, IntoColor, Lab, Srgb};
 
-enum ColorType {
+pub enum ColorType {
     Rgb,
     Lab
 }
@@ -19,6 +19,17 @@ pub struct KmeansPixelizer{
     max_iter : usize,
     color_type : ColorType
 }
+
+impl KmeansPixelizer {
+    pub fn new(num_runs: u32, max_iter: usize, color_type: ColorType) -> Self {
+        Self {
+            num_runs,
+            max_iter,
+            color_type,
+        }
+    }
+}
+
 
 fn get_img_vec(rgb_image : ImageBuffer<image::Rgb<u8>, Vec<u8>>, color_type : &ColorType) -> ColorVec {
     match *color_type{
@@ -160,18 +171,18 @@ mod tests {
 
     #[test]
     fn test_size() {
-        let img = image::open("examples/images/ferris.png").unwrap();
+        let img = image::open("examples/images/ferris_3d.png").unwrap();
         let pixelizer = super::KmeansPixelizer{
             num_runs: 4,
             max_iter: 20,
             color_type: ColorType::Lab
         };
-        let width = 60;
-        let height = 40;
+        let width = 64;
+        let height = 64;
         let num_colors = 8;
         let pixelized = pixelizer.pixelize(&img, &width, &height, &num_colors);
 
-        let path_out = "examples/images/ferris_pixelized.png";
+        let path_out = "examples/images/ferris_3d_pixelized.png";
         pixelized.save(path_out).unwrap();
 
         let size_pixelized = (pixelized.width(), pixelized.height());

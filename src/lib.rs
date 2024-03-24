@@ -1,6 +1,7 @@
 mod pixelizer;
 pub use pixelizer::Pixelizer;
-pub use pixelizer::kmeans_pixelizer::KmeansPixelizer;
+pub use pixelizer::kmeans_pixelizer::{KmeansPixelizer, ColorType};
+pub use pixelizer::{scale_to_size, CropMethod};
 
 
 

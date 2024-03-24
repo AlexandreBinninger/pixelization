@@ -2,8 +2,26 @@
 name = "pixelization"
 version = "0.1.0"
 edition = "2021"
+authors = ["Alexandre Binninger"]
+homepage = "https://github.com/AlexandreBinninger/pixelization"
+repository = "https://github.com/AlexandreBinninger/pixelization"
+readme = "README.md"
+keywords = ["pixel", "pixelization", "pixelation", "pixelize", "pixelate", "quantization", "PIA", "kmeans", "lab", "color", "rgb"]
+categories = ["graphics", "multimedia::images", "mathematics"]
+license = "MIT"
+description = """Multiple pixelization methods."""
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+# Library configuration
+[lib]
+path = "src/lib.rs"
+
+
+# Binary configuration
+[[bin]]
+name = "pixelize"   # The name of the binary executable
+path = "src/bin/main.rs" # Path to the source file of the binary
 
 [dependencies.kmeans_colors]
 version = "0.6"
@@ -16,9 +34,8 @@ features = ["std"]
 
 [dependencies]
 image = "=0.24.9"
-
+clap = { version = "4.5.3", features = ["derive"] }
+minifb = "0.25"
 
 [dependencies.rand]
 version = "0.8.5"
-default-features = false
-features = ["std"]
