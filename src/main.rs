@@ -1,15 +1,21 @@
 use std::error::Error;
 
 use clap::{Command, Arg, ArgGroup, ArgAction, ValueEnum, value_parser};
-use image::imageops::FilterType;
+use image::{DynamicImage, imageops::FilterType};
 use pixelization::{ColorType, KmeansPixelizer, Pixelizer, scale_to_size, CropMethod};
 
-use minifb::{Key, Window, WindowOptions};
+use minifb::{Key, KeyRepeat, Window, WindowOptions};
 
 #[derive(ValueEnum, Clone, Debug)]
 enum PixelizationMethod{
     Kmeans,
     PIA
+}
+
+#[derive(ValueEnum, Clone, Debug)]
+enum ColorSpace{
+    Lab,
+    Rgb
 }
 
 
@@ -67,8 +73,29 @@ fn main() -> Result<(), Box<dyn Error>>{
             .help("The number of colors used for the output.")
             .default_value("8")
             .value_parser(value_parser!(usize))
-            .value_name("UINT")
-    )
+            .value_name("UINT"))
+        .arg(Arg::new("num_runs")
+            .long("num_runs")
+            .short('r')
+            .help("The number of runs for the kmeans algorithm.")
+            .default_value("3")
+            .value_parser(value_parser!(u32))
+            .value_name("UINT"))
+        .arg(Arg::new("max_iter")
+            .long("max_iter")
+            .short('i')
+            .help("The maximum number of iterations for the kmeans algorithm.")
+            .default_value("20")
+            .value_parser(value_parser!(usize))
+            .value_name("UINT"))
+        .arg(Arg::new("color_space")
+            .long("color_space")
+            .short('c')
+            .help("The color space to use.")
+            .action(ArgAction::Set)
+            .value_name("ColorSpace")
+            .value_parser(value_parser!(ColorSpace))
+            .default_value("lab"))
         .group(ArgGroup::new("dimension")
             .args(&["scale", "size"])
             .required(true))
@@ -81,7 +108,6 @@ fn main() -> Result<(), Box<dyn Error>>{
     println!("Using input file: {}", input_path);
 
     let img_src = image::open(input_path)?;
-
 
     let (img, (w, h)) = 
     if matches.contains_id("scale"){
@@ -96,7 +122,14 @@ fn main() -> Result<(), Box<dyn Error>>{
 
     let img_pixelized = match matches.get_one::<PixelizationMethod>("method") {
         Some(PixelizationMethod::Kmeans) => {
-            let kmeans_pixelizer = KmeansPixelizer::new(5, 20, ColorType::Lab); //TODO: make it depending on arguments
+            let num_runs = *matches.get_one::<u32>("num_runs").unwrap();
+            let max_iter = *matches.get_one::<usize>("max_iter").unwrap();
+            let color_space = matches.get_one::<ColorSpace>("color_space").unwrap();
+            let color_type = match color_space {
+                ColorSpace::Lab => ColorType::Lab,
+                ColorSpace::Rgb => ColorType::Rgb
+            };
+            let kmeans_pixelizer = KmeansPixelizer::new(num_runs, max_iter, color_type); //TODO: make it depending on arguments
             kmeans_pixelizer.pixelize(&img, &w, &h, &n_colors)
         },
         Some(PixelizationMethod::PIA) => return Err("PIA method is not implemented".into()),
@@ -106,31 +139,7 @@ fn main() -> Result<(), Box<dyn Error>>{
 
     // Show
     if *matches.get_one::<bool>("show").unwrap_or(&false){
-        println!("Press ESC to quit.");
-        let img_pixelized = img_pixelized.resize(w*4, h*4, FilterType::Nearest);
-        let img_rgb = img_pixelized.to_rgb8();
-        let width = img_rgb.width();
-        let height = img_rgb.height();
-        let buffer: Vec<u32> = img_rgb.pixels().map(|p| {
-            let [r, g, b] = p.0;
-            // Assuming the alpha channel is fully opaque (0xFF)
-            (r as u32) << 16 | (g as u32) << 8 | (b as u32) | 0xFF000000
-        }).collect();
-
-        let mut window = Window::new(
-            "Pixelization",
-            width as usize,
-            height as usize,
-            WindowOptions::default(),
-        )
-        .expect("Failed to create window");
-    
-        // Display loop
-        while window.is_open() && !window.is_key_down(Key::Escape) {
-            window
-                .update_with_buffer(&buffer, width as usize, height as usize)
-                .expect("Failed to update window");
-        }
+        show(&img, &img_pixelized);
     }
 
     // Save
@@ -160,5 +169,45 @@ fn parse_size(size_str : &str) -> Result<(u32, u32), &'static str>{
             0 => Err("Height is zero."),
             _ => Ok((w, h))
         }
+    }
+}
+
+fn show(img: &DynamicImage, img_pixelized: &DynamicImage){
+    println!("Press ESC to quit.");
+    println!("Press ENTER to alternate between input and pixelization.");
+    let width = img.width();
+    let height = img.height();
+    let img_pixelized_resized = img_pixelized.resize(width, height, FilterType::Nearest);
+    let img_pixelized_rgb = img_pixelized_resized.to_rgb8();
+    let buffer_pixelized: Vec<u32> = img_pixelized_rgb.pixels().map(|p| {
+        let [r, g, b] = p.0;
+        // Assuming the alpha channel is fully opaque (0xFF)
+        (r as u32) << 16 | (g as u32) << 8 | (b as u32) | 0xFF000000
+    }).collect();
+
+    let img_rgb = img.to_rgb8();
+    let buffer: Vec<u32> = img_rgb.pixels().map(|p| {
+        let [r, g, b] = p.0;
+        // Assuming the alpha channel is fully opaque (0xFF)
+        (r as u32) << 16 | (g as u32) << 8 | (b as u32) | 0xFF000000
+    }).collect();
+
+    let mut window = Window::new(
+        "Pixelization",
+        width as usize,
+        height as usize,
+        WindowOptions::default(),
+    )
+    .expect("Failed to create window");
+    let mut current_buffer = &buffer_pixelized;
+    // Display loop
+    while window.is_open() && !window.is_key_down(Key::Escape) {
+        window
+        .update_with_buffer(current_buffer, width as usize, height as usize)
+        .expect("Failed to update window");
+        if window.is_key_pressed(Key::Enter, KeyRepeat::No){
+            current_buffer = if current_buffer == &buffer { &buffer_pixelized} else { &buffer};
+        }
+        
     }
 }

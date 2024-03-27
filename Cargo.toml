@@ -21,7 +21,7 @@ path = "src/lib.rs"
 # Binary configuration
 [[bin]]
 name = "pixelize"   # The name of the binary executable
-path = "src/bin/main.rs" # Path to the source file of the binary
+path = "src/main.rs" # Path to the source file of the binary
 
 [dependencies.kmeans_colors]
 version = "0.6"

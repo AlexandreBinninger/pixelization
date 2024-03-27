@@ -35,11 +35,8 @@ fn get_img_vec(rgb_image : ImageBuffer<image::Rgb<u8>, Vec<u8>>, color_type : &C
     match *color_type{
         ColorType::Lab => {
             ColorVec::LabVec(rgb_image.enumerate_pixels().map(|(_, _, pixel)| {
-                // Convert the image::Rgb<u8> pixel to palette's Srgb
                 let rgb_color = Srgb::new(pixel[0] as f32 / 255.0, pixel[1] as f32 / 255.0, pixel[2] as f32 / 255.0)
-                    .into_linear(); // Ensure the RGB color is in linear space if required
-        
-                // Convert Srgb to Lab color space
+                    .into_linear();        
                 let lab_color: Lab = rgb_color.into_color();
         
                 lab_color
@@ -47,11 +44,8 @@ fn get_img_vec(rgb_image : ImageBuffer<image::Rgb<u8>, Vec<u8>>, color_type : &C
         },
         ColorType::Rgb =>{
             ColorVec::RgbVec(rgb_image.enumerate_pixels().map(|(_, _, pixel)| {
-                // Convert the image::Rgb<u8> pixel to palette's Srgb
                 let rgb_color = Srgb::new(pixel[0] as f32 / 255.0, pixel[1] as f32 / 255.0, pixel[2] as f32 / 255.0)
-                    .into_linear(); // Ensure the RGB color is in linear space if required
-                
-                // Convert Srgb to Rgb color space
+                    .into_linear();                
                 let srgb_color : Rgb = rgb_color.into_color();
                 srgb_color
             }).collect::<Vec<Rgb>>())
@@ -125,10 +119,7 @@ impl Pixelizer for KmeansPixelizer{
             }
         };
 
-
         let mut img_buffer = ImageBuffer::new(*width, *height);
-
-
         for (x, y, pixel) in img_buffer.enumerate_pixels_mut(){
             // x in 0..width, y in 0..height
             let start_x_orig = (img_width/ *width) * x;
@@ -150,13 +141,11 @@ impl Pixelizer for KmeansPixelizer{
                 Some((index, _)) => index,
                 None => 0
             };
-
-
+            
             if let Some(color) = colors_palette.get(index_max){
                 *pixel = image::Rgb([color.red, color.green, color.blue])
             }
         }
-
         let dynamic_image = DynamicImage::ImageRgb8(img_buffer);
         dynamic_image   
     }
