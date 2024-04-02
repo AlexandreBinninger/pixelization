@@ -1,12 +1,13 @@
 // Implementation of Pixelated Image Abstraction (PIA)
 // Link: https://pixl.cs.princeton.edu/pubs/Gerstner_2012_PIA/index.php
 
-use image::{DynamicImage};
+use image::{DynamicImage, Rgba, GenericImage};
+use nalgebra::iter;
 
 use super::super::Pixelizer;
 use palette::{rgb::Rgb, FromColor, IntoColor, Lab, Srgb};
 use core::num;
-use std::collections::HashSet;
+use std::{collections::HashSet, sync::mpsc::Sender};
 
 pub struct PIAPixelizer{
     temperature_init: Option<f32>,
@@ -45,7 +46,7 @@ struct SuperPixel{
     sp_color: Lab
 }
 
-fn lab_distance(lab1: Lab, lab2: Lab) -> f32{
+fn lab_distance(lab1: &Lab, lab2: &Lab) -> f32{
     let l_diff = lab1.l - lab2.l;
     let a_diff = lab1.a - lab2.a;
     let b_diff = lab1.b - lab2.b;
@@ -76,7 +77,7 @@ impl SuperPixel{
     // eq (1) of the paper
     fn cost(&self, x: u32, y: u32, img_lab : Vec<Vec<Lab>>, m: f32, nb_pixels_in : u32, nb_pixels_out : u32) -> f32{
         let lab_color = img_lab[y as usize][x as usize];
-        let d_lab = lab_distance(self.palette_color, lab_color);
+        let d_lab = lab_distance(&self.palette_color, &lab_color);
         let d_spatial = ((self.position.0 - x as f32).powi(2) + (self.position.1 - y as f32).powi(2)).sqrt();
 
         d_lab + m * ((nb_pixels_out as f32) / (nb_pixels_in as f32)).sqrt() * d_spatial
@@ -104,6 +105,16 @@ impl SuperPixel{
             acc+img[*y as usize][*x as usize]
         }) / self.pixels.len() as f32;
     }
+
+    fn normalize_probs(&mut self){
+        let sum = self.p_c.iter().sum::<f32>();
+        self.p_c = self.p_c.iter().map(|x| x / sum).collect();
+    }
+
+    fn update_palette_color(&mut self, colors: &Vec<Lab>){
+        let highest_prob = self.p_c.iter().enumerate().max_by(|x, y| x.1.partial_cmp(y.1).unwrap()).unwrap().0;
+        self.palette_color = colors[highest_prob];
+    }
 }
 
 
@@ -115,12 +126,23 @@ struct Palette{
 
 impl Palette{
     fn new(init_color : Lab) -> Self{
-        let colors = vec![init_color; 2];
+        let mut colors = vec![init_color; 2];
+        colors[1] = Lab::from_components((colors[1].l + 1.0, colors[1].a+1.0, colors[1].b+1.0));
         let probabilities = vec![0.5; 2];
         Self{
             colors,
             probabilities
         }
+    }
+
+    fn conditional_prob(&self, color: Lab, temperature: f32) -> Vec<f32>{
+        let mut probs = Vec::with_capacity(self.colors.len());
+        for k in 0..self.colors.len(){
+            let d_lab = lab_distance(&self.colors[k], &color);
+            let prob = self.probabilities[k]*(-d_lab/temperature).exp();
+            probs.push(prob);
+        }
+        probs
     }
 }
 
@@ -170,22 +192,146 @@ impl PIAGlobal{
     }
 
     fn refine_superpixels(&mut self, img: &Vec<Vec<Lab>>, m: f32){
-        
+        for superpixel in self.superpixels.iter_mut().flatten(){
+            superpixel.clear_pixels();
+        }
+
+        // Find best superpixel for each pixel
+        for y in 0..img.len(){
+            for x in 0..img[0].len(){
+                let mut min_cost = std::f32::MAX;
+                let mut min_sp_index = (0, 0);
+                for (y_sp, superpixel_row) in self.superpixels.iter().enumerate(){
+                    for (x_sp, superpixel) in superpixel_row.iter().enumerate(){
+                        let cost = superpixel.cost(x as u32, y as u32, img.to_vec(), m, 1, 1);
+                        if cost < min_cost{
+                            min_cost = cost;
+                            min_sp_index = (x_sp, y_sp);
+                        }
+                    }
+                }
+                self.superpixels[min_sp_index.1][min_sp_index.0].add_pixel(x as u32, y as u32);
+            }
+        }
+
+        // Refine colors and positions for superpixels
+        for superpixel in self.superpixels.iter_mut().flatten(){
+            superpixel.update_pos();
+            superpixel.update_sp_color(img);
+        }
+
+        // TODO: Laplacian smoothing
+
+        // TODO: Bilateral filtering
     }
 
-    fn associate(&mut self, img: &Vec<Vec<Lab>>){
-        
+    fn associate(&mut self, temperature: f32){
+        self.superpixels.iter_mut().flatten().for_each(|superpixel| {
+            let probs = self.palette.conditional_prob(superpixel.sp_color, temperature);
+            superpixel.p_c = probs;
+            superpixel.normalize_probs();
+            superpixel.update_palette_color(&self.palette.colors);
+        });
+
+        self.palette.probabilities = vec![0.0; self.palette.probabilities.len()];
+        for superpixel in self.superpixels.iter().flatten(){
+            for (k, prob) in superpixel.p_c.iter().enumerate(){
+                self.palette.probabilities[k] += prob * superpixel.p_s;
+            }
+        }
+
+        println!("{:?}", self.palette.probabilities);
+        println!("{}", self.palette.probabilities.iter().sum::<f32>());
     }
 
-    fn refine_palette(&mut self, img: &Vec<Vec<Lab>>, epsilon_palette: &f32) -> bool{
-        true
+    fn refine_palette(&mut self, epsilon_palette: &f32) -> bool{
+        let mut total_change: f32 = 0.0;
+        let mut updated_colors = Vec::with_capacity(self.palette.colors.len());
+        for (k, color) in self.palette.colors.iter_mut().enumerate(){
+            let palette_probability = self.palette.probabilities[k];
+            let acc = self.superpixels.iter().flatten().fold((0., 0., 0.), |acc, superpixel| {
+                let prob = superpixel.p_c[k] * superpixel.p_s / palette_probability;
+                (acc.0 + superpixel.sp_color.l * prob, acc.1 + superpixel.sp_color.a * prob, acc.2 + superpixel.sp_color.b * prob)
+            });
+            let new_color = Lab::new(acc.0, acc.1, acc.2);
+            let change = lab_distance(&new_color, color);
+            updated_colors.push(new_color);
+            total_change += change;
+        }
+
+        self.palette.colors = updated_colors;
+
+        return total_change < *epsilon_palette; //TODO: check whether I should not divide by the number of colors? 
     }
 
-    fn expand_palette(&mut self, img: &Vec<Vec<Lab>>, num_colors: &usize, epsilon_cluster: &f32){    
+    fn expand_palette(&mut self,num_colors: &usize, epsilon_cluster: &f32){
+        let cluster_size = self.clusters.len();
+        if cluster_size < *num_colors{
+            for k in 0..cluster_size{
+                if (self.clusters.len() < *num_colors){
+                    let (i, j) = self.clusters[k];
+                    let color_i = self.palette.colors[i];
+                    let color_j = self.palette.colors[j];
+                    let prob_i = self.palette.probabilities[i]/2.0;
+                    let prob_j = self.palette.probabilities[j]/2.0;
+                    if (lab_distance(&color_i, &color_j) > *epsilon_cluster){
+                        self.palette.colors.push(color_i);
+                        self.palette.colors.push(color_j);
+                        self.palette.probabilities.push(prob_i);
+                        self.palette.probabilities.push(prob_j);
+                        self.palette.probabilities[i] = prob_i;
+                        self.palette.probabilities[j] = prob_j;
+                        // let new_color = Lab::new((color_i.l + color_j.l) / 2.0, (color_i.a + color_j.a) / 2.0, (color_i.b + color_j.b) / 2.0);
+                        // self.palette.colors.push(new_color);
+                        self.clusters.push((i, self.palette.colors.len() - 2));
+                        self.clusters[k] = (j, self.palette.colors.len() - 1);
+                    }
+                }
+            }
+        }
+        let cluster_size = self.clusters.len();
+        if cluster_size >= *num_colors{
+            let mut new_palette_colors = Vec::with_capacity(*num_colors);
+            let mut new_palette_probs = Vec::with_capacity(*num_colors);
+            for k in 0..cluster_size{
+                let (i, j) = self.clusters[k];
+                let color_i = self.palette.colors[i];
+                let color_j = self.palette.colors[j];
+                let prob_i = self.palette.probabilities[i];
+                let prob_j = self.palette.probabilities[j];
+                let new_color = Lab::new((color_i.l + color_j.l) / 2.0, (color_i.a + color_j.a) / 2.0, (color_i.b + color_j.b) / 2.0);
+                new_palette_colors.push(new_color);
+                new_palette_probs.push(prob_i + prob_j);
+            }
+            self.palette.colors = new_palette_colors;
+            self.palette.probabilities = new_palette_probs;
+        } else{
+            for k in 0..cluster_size{
+                //TODO
+                // self.palette.colors[self.clusters[k].1] += perturb;
+                let current_color = self.palette.colors[self.clusters[k].1];
+                let perturbed_color = Lab::from_components((current_color.l + 1.0, current_color.a+1.0, current_color.b+1.0));
+                self.palette.colors[self.clusters[k].1] = perturbed_color;
+            }
+        }
     }
 
     fn get_img(&self, saturation: &f32) -> DynamicImage{
-        DynamicImage::new_rgb8(1, 1)
+        let width = self.superpixels[0].len();
+        let height = self.superpixels.len();
+        let mut img = DynamicImage::new_rgb8(width as u32, height as u32);
+        for (y, row) in self.superpixels.iter().enumerate(){
+            for (x, superpixel) in row.iter().enumerate(){
+                let (l, mut a, mut b) = superpixel.palette_color.into_components();
+                a *= *saturation;
+                b *= *saturation;
+                let color = Lab::new(l, a, b);
+                let srgb_color: Srgb<u8> = Srgb::from_color(color).into_format();
+                let rgba_color = Rgba([srgb_color.red, srgb_color.green, srgb_color.blue, 255]);
+                img.put_pixel(x as u32, y as u32, rgba_color);
+            }
+        }
+        img
     }
 
     fn get_current_nb_colors(&self) -> usize{
@@ -219,20 +365,28 @@ impl Pixelizer for PIAPixelizer{
             }
         };
 
-        while temperature > self.temperature_final{            
+        let mut iter = 0;
+        while temperature > self.temperature_final{
+            
+            println!("Iteration: {}", iter);
+            iter += 1;
             // refine superpixels
             global.refine_superpixels(&lab_vec, self.m);
             // associate
-            global.associate(&lab_vec);
+            global.associate(temperature);
             // refine colors in the palette
-            let to_expand = global.refine_palette(&lab_vec, &self.epsilon_palette);
+            let to_expand = global.refine_palette(&self.epsilon_palette);
 
             // if palette converged, reduce temperature and expand palette if necessary
             if to_expand{
+                println!("Expanding palette");
                 temperature *= self.alpha;
                 if global.get_current_nb_colors() < *num_colors{
-                    global.expand_palette(&lab_vec, num_colors, &self.epsilon_cluster);
+                    global.expand_palette(num_colors, &self.epsilon_cluster);
                 }
+            }
+            else {
+                println!("Not expanding palette");
             }
         }
         // post process
@@ -253,7 +407,7 @@ mod tests {
 
     #[test]
     fn test_size() {
-        let img = image::open("examples/images/ferris_3d.png").unwrap();
+        let img = image::open("examples/images/ferris_3d_pixelized.png").unwrap();
         let pixelizer = PIAPixelizer{
             temperature_init: Some(35.0),
             temperature_final: 1.0,
@@ -263,9 +417,9 @@ mod tests {
             epsilon_cluster: 0.25,
             post_process_saturation: 1.1
         };
-        let width = 8;
-        let height = 8;
-        let num_colors = 8;
+        let width = 32;
+        let height = 32;
+        let num_colors = 6;
         let pixelized = pixelizer.pixelize(&img, &width, &height, &num_colors);
 
         let path_out = "examples/images/ferris_3d_PIA.png";

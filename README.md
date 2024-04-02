@@ -8,3 +8,4 @@
 - [ ] make a standalone app
 - [ ] make documentation
 - [ ] PCA for the delta and for the initialization of the temperature
+- [ ] PIA: error if less than two colors
