@@ -3,11 +3,7 @@ use image::{DynamicImage, ImageBuffer};
 use super::super::Pixelizer;
 use kmeans_colors::{get_kmeans, Kmeans};
 use palette::{rgb::Rgb, FromColor, IntoColor, Lab, Srgb};
-
-pub enum ColorType {
-    Rgb,
-    Lab
-}
+use super::ColorType;
 
 enum ColorVec {
     LabVec(Vec<Lab>),

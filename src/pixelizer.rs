@@ -1,5 +1,5 @@
 extern crate image;
-use image::{DynamicImage};
+use image::DynamicImage;
 use rand::Rng;
 
 pub enum CropMethod{
@@ -28,9 +28,14 @@ pub fn scale_to_size<'a>(img: DynamicImage, scale: &u32, crop: CropMethod) -> (D
     }
 }
 
+pub enum ColorType {
+    Rgb,
+    Lab
+}
+
 pub trait Pixelizer{
     fn pixelize(&self, img: &DynamicImage, width : &u32, height: &u32,  num_colors : &usize) -> DynamicImage;
-    // todo: pixelize, with the "block size" --> computing the width and height, maybe cropping, then call the above pixelize fn
 }
 
 pub mod kmeans_pixelizer;
+pub mod pia;

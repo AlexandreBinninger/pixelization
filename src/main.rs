@@ -177,7 +177,7 @@ fn show(img: &DynamicImage, img_pixelized: &DynamicImage){
     println!("Press ENTER to alternate between input and pixelization.");
     let width = img.width();
     let height = img.height();
-    let img_pixelized_resized = img_pixelized.resize(width, height, FilterType::Nearest);
+    let img_pixelized_resized = img_pixelized.resize_exact(width, height, FilterType::Nearest);
     let img_pixelized_rgb = img_pixelized_resized.to_rgb8();
     let buffer_pixelized: Vec<u32> = img_pixelized_rgb.pixels().map(|p| {
         let [r, g, b] = p.0;
