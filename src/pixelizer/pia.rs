@@ -87,10 +87,6 @@ impl SuperPixel{
         d_lab + m * ((nb_pixels_out as f32) / (nb_pixels_in as f32)).sqrt() * d_spatial
     }
 
-    fn add_pixel(&mut self, x: u32, y: u32){
-        self.pixels.insert((x, y));
-    }
-
     fn add_pixels(&mut self, pixels: &Vec<(u32, u32)>){
         self.pixels.extend(pixels);
     }
@@ -153,6 +149,50 @@ impl Palette{
         probs
     }
 }
+
+fn bilateral_filter_lab(img_lab: &Vec<Vec<Lab>>, sigma_spatial: f32, sigma_range: f32) -> Vec<Vec<Lab>> {
+    let height = img_lab.len();
+    let width = img_lab.first().unwrap_or(&vec![]).len();
+    let mut output = vec![vec![Lab::default(); width]; height];
+
+    let filter_radius = (sigma_spatial * 3.0).ceil() as i32;
+
+    for y in 0..height as i32 {
+        for x in 0..width as i32 {
+            let mut sum_weight = 0.0;
+            let mut sum_l = 0.0;
+            let mut sum_a = 0.0;
+            let mut sum_b = 0.0;
+            let center_color = img_lab[y as usize][x as usize];
+
+            for ky in -filter_radius..=filter_radius {
+                for kx in -filter_radius..=filter_radius {
+                    let nx = x + kx;
+                    let ny = y + ky;
+
+                    if nx >= 0 && nx < width as i32 && ny >= 0 && ny < height as i32 {
+                        let neighbor_color = img_lab[ny as usize][nx as usize];
+
+                        let spatial_weight = (-((kx.pow(2) + ky.pow(2)) as f32) / (2.0 * sigma_spatial.powi(2))).exp();
+                        let color_distance = lab_distance(&center_color, &neighbor_color);
+                        let range_weight = (-(color_distance.powi(2)) / (2.0 * sigma_range.powi(2))).exp();
+
+                        let weight = spatial_weight * range_weight;
+
+                        sum_l += neighbor_color.l * weight;
+                        sum_a += neighbor_color.a * weight;
+                        sum_b += neighbor_color.b * weight;
+                        sum_weight += weight;
+                    }
+                }
+            }
+            output[y as usize][x as usize] = Lab::new(sum_l / sum_weight, sum_a / sum_weight, sum_b / sum_weight);
+        }
+    }
+
+    output
+}
+
 
 struct PIAGlobal{
     superpixels: Vec<Vec<SuperPixel>>,
@@ -242,9 +282,42 @@ impl PIAGlobal{
             superpixel.update_sp_color(img);
         }
 
-        // TODO: Laplacian smoothing
+        let in_image = |x: f32, y:f32| x >=0. && y >= 0. && x < img[0].len() as f32 && y < img.len() as f32;
 
-        // TODO: Bilateral filtering
+        // Laplacian smoothing
+        let x_shift = vec![-1., 0., 1., 0.];
+        let y_shift = vec![0., -1., 0., 1.];
+
+        for row in self.superpixels.iter_mut(){
+            for superpixel in row.iter_mut(){
+                let (mut new_x, mut new_y, mut n) = (0.0, 0.0, 0);
+                for (dx, dy) in x_shift.iter().zip(y_shift.iter()){
+                    let x_neigh = superpixel.position.0 + dx;
+                    let y_neigh = superpixel.position.1 + dy;
+                    if in_image(x_neigh, y_neigh){
+                        new_x += x_neigh;
+                        new_y += y_neigh;
+                        n += 1;
+                    }
+                }
+                new_x /= n as f32;
+                new_y /= n as f32;
+                superpixel.position = (new_x * 0.4 + 0.6 * superpixel.position.0, new_y * 0.4 + 0.6 * superpixel.position.1); //TODO: remove the magic constants
+            }
+        }
+
+        // Bilateral filtering
+        let img_from_superpixels : Vec<Vec<Lab>> = self.superpixels.iter().map(|row|{
+            row.iter().map(|superpixel| superpixel.sp_color).collect()
+        }).collect();
+
+        let img_filtered = bilateral_filter_lab(&img_from_superpixels, 0.87, 0.87); //TODO: remove the magic constants
+
+        self.superpixels.iter_mut().enumerate().for_each(|(y, row)| {
+            row.iter_mut().enumerate().for_each(|(x, superpixel)| {
+                superpixel.sp_color = img_filtered[y][x];
+            });
+        });
     }
 
     fn associate(&mut self, temperature: f32){
@@ -290,21 +363,19 @@ impl PIAGlobal{
         let cluster_size = self.clusters.len();
         if cluster_size < *num_colors{
             for k in 0..cluster_size{
-                if (self.clusters.len() < *num_colors){
+                if self.clusters.len() < *num_colors{
                     let (i, j) = self.clusters[k];
                     let color_i = self.palette.colors[i];
                     let color_j = self.palette.colors[j];
                     let prob_i = self.palette.probabilities[i]/2.0;
                     let prob_j = self.palette.probabilities[j]/2.0;
-                    if (lab_distance(&color_i, &color_j) > *epsilon_cluster){
+                    if lab_distance(&color_i, &color_j) > *epsilon_cluster{
                         self.palette.colors.push(color_i);
                         self.palette.colors.push(color_j);
                         self.palette.probabilities.push(prob_i);
                         self.palette.probabilities.push(prob_j);
                         self.palette.probabilities[i] = prob_i;
                         self.palette.probabilities[j] = prob_j;
-                        // let new_color = Lab::new((color_i.l + color_j.l) / 2.0, (color_i.a + color_j.a) / 2.0, (color_i.b + color_j.b) / 2.0);
-                        // self.palette.colors.push(new_color);
                         self.clusters.push((i, self.palette.colors.len() - 2));
                         self.clusters[k] = (j, self.palette.colors.len() - 1);
                     }
@@ -440,26 +511,26 @@ mod tests {
             epsilon_cluster: 0.25,
             post_process_saturation: 1.1
         };
-        let width = 32;
-        let height = 32;
+        let width = 64;
+        let height = 64;
         let num_colors = 8;
         let pixelized = pixelizer.pixelize(&img, &width, &height, &num_colors);
 
-        let path_out = "examples/images/ferris_3d_PIA_32.png";
+        let path_out = "examples/images/ferris_3d_PIA_64_8.png";
         pixelized.save(path_out).unwrap();
 
         let size_pixelized = (pixelized.width(), pixelized.height());
         assert_eq!(size_pixelized, (width, height));
     }
 
-    fn equal_dynamic_image(img1: &DynamicImage, img2: &DynamicImage) -> Result<bool, ImageError>{
-        if img1.width() != img2.width() || img1.height() != img2.height(){
-            return Ok(false);
-        }
-        let img_buf_1 = img1.to_rgb8();
-        let img_buf_2 = img2.to_rgb8();
-        Ok(img_buf_1.as_raw() == img_buf_2.as_raw())
-    }
+    // fn equal_dynamic_image(img1: &DynamicImage, img2: &DynamicImage) -> Result<bool, ImageError>{
+    //     if img1.width() != img2.width() || img1.height() != img2.height(){
+    //         return Ok(false);
+    //     }
+    //     let img_buf_1 = img1.to_rgb8();
+    //     let img_buf_2 = img2.to_rgb8();
+    //     Ok(img_buf_1.as_raw() == img_buf_2.as_raw())
+    // }
 
     // #[test]
     // fn test_uniform(){
