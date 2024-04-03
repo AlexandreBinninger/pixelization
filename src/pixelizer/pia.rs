@@ -8,6 +8,10 @@ use super::super::Pixelizer;
 use palette::{rgb::Rgb, FromColor, IntoColor, Lab, Srgb};
 use core::num;
 use std::{collections::HashSet, sync::mpsc::Sender};
+use rayon::prelude::*;
+use std::sync::Mutex;
+
+
 
 pub struct PIAPixelizer{
     temperature_init: Option<f32>,
@@ -75,7 +79,7 @@ impl SuperPixel{
     }
 
     // eq (1) of the paper
-    fn cost(&self, x: u32, y: u32, img_lab : Vec<Vec<Lab>>, m: f32, nb_pixels_in : u32, nb_pixels_out : u32) -> f32{
+    fn cost(&self, x: u32, y: u32, img_lab : &Vec<Vec<Lab>>, m: f32, nb_pixels_in : u32, nb_pixels_out : u32) -> f32{
         let lab_color = img_lab[y as usize][x as usize];
         let d_lab = lab_distance(&self.palette_color, &lab_color);
         let d_spatial = ((self.position.0 - x as f32).powi(2) + (self.position.1 - y as f32).powi(2)).sqrt();
@@ -85,6 +89,10 @@ impl SuperPixel{
 
     fn add_pixel(&mut self, x: u32, y: u32){
         self.pixels.insert((x, y));
+    }
+
+    fn add_pixels(&mut self, pixels: &Vec<(u32, u32)>){
+        self.pixels.extend(pixels);
     }
 
     fn clear_pixels(&mut self){
@@ -197,20 +205,34 @@ impl PIAGlobal{
         }
 
         // Find best superpixel for each pixel
-        for y in 0..img.len(){
-            for x in 0..img[0].len(){
+        let sp_pixels: Vec<_> = self.superpixels.iter_mut()
+                                                .map(|row| row.iter_mut().map(|sp| Vec::new()).collect::<Vec<_>>())
+                                                .collect();
+        let sp_pixels_mutex = Mutex::new(sp_pixels);
+
+        img.par_iter().enumerate().for_each(|(y, row)| {
+            row.iter().enumerate().for_each(|(x, _)| {
                 let mut min_cost = std::f32::MAX;
                 let mut min_sp_index = (0, 0);
                 for (y_sp, superpixel_row) in self.superpixels.iter().enumerate(){
                     for (x_sp, superpixel) in superpixel_row.iter().enumerate(){
-                        let cost = superpixel.cost(x as u32, y as u32, img.to_vec(), m, 1, 1);
+                        let cost = superpixel.cost(x as u32, y as u32, img, m, 1, 1);
                         if cost < min_cost{
                             min_cost = cost;
                             min_sp_index = (x_sp, y_sp);
                         }
                     }
                 }
-                self.superpixels[min_sp_index.1][min_sp_index.0].add_pixel(x as u32, y as u32);
+                let mut sp_pixels = sp_pixels_mutex.lock().unwrap();
+                sp_pixels[min_sp_index.1][min_sp_index.0].push((x as u32, y as u32));
+            });
+        });
+
+        let sp_pixels = sp_pixels_mutex.into_inner().unwrap();
+
+        for (y, row) in sp_pixels.into_iter().enumerate(){
+            for (x, pixels) in row.into_iter().enumerate(){
+                self.superpixels[y][x].add_pixels(&pixels);
             }
         }
 
@@ -369,6 +391,7 @@ impl Pixelizer for PIAPixelizer{
         while temperature > self.temperature_final{
             
             println!("Iteration: {}", iter);
+            println!("Temperature: {}", temperature);
             iter += 1;
             // refine superpixels
             global.refine_superpixels(&lab_vec, self.m);
@@ -407,7 +430,7 @@ mod tests {
 
     #[test]
     fn test_size() {
-        let img = image::open("examples/images/ferris_3d_pixelized.png").unwrap();
+        let img = image::open("examples/images/ferris_3d.png").unwrap();
         let pixelizer = PIAPixelizer{
             temperature_init: Some(35.0),
             temperature_final: 1.0,
@@ -419,10 +442,10 @@ mod tests {
         };
         let width = 32;
         let height = 32;
-        let num_colors = 6;
+        let num_colors = 8;
         let pixelized = pixelizer.pixelize(&img, &width, &height, &num_colors);
 
-        let path_out = "examples/images/ferris_3d_PIA.png";
+        let path_out = "examples/images/ferris_3d_PIA_32.png";
         pixelized.save(path_out).unwrap();
 
         let size_pixelized = (pixelized.width(), pixelized.height());
