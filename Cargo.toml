@@ -38,6 +38,8 @@ clap = { version = "4.5.3", features = ["derive"] }
 minifb = "0.25"
 nalgebra = "0.32.5"
 rayon = "1.10.0"
+ndarray-linalg = "0.16.0"
+ndarray = "0.15.6"
 
 [dependencies.rand]
 version = "0.8.5"

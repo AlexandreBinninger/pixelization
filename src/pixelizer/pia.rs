@@ -2,12 +2,12 @@
 // Link: https://pixl.cs.princeton.edu/pubs/Gerstner_2012_PIA/index.php
 
 use image::{DynamicImage, Rgba, GenericImage};
-use nalgebra::iter;
+use ndarray::{Array1, Array2};
+use ndarray_linalg::{Eigh, UPLO};
 
 use super::super::Pixelizer;
-use palette::{rgb::Rgb, FromColor, IntoColor, Lab, Srgb};
-use core::num;
-use std::{collections::HashSet, sync::mpsc::Sender};
+use palette::{FromColor, IntoColor, Lab, Srgb};
+use std::collections::HashSet;
 use rayon::prelude::*;
 use std::sync::Mutex;
 
@@ -17,24 +17,42 @@ pub struct PIAPixelizer{
     temperature_init: Option<f32>,
     temperature_final: f32, // default should be 1.0
     m : f32, // coefficient for the cost function, eq (1) of the paper,
-    alpha: f32, // efault should be 0.7
+    alpha: f32, // default should be 0.7
     epsilon_palette: f32, // default is 1
     epsilon_cluster: f32, // default is 0.25
     post_process_saturation: f32, // default is 1.1 in the paper
+    laplacian_smoothing_factor: f32,
+    bilateral_filter_sigma_spatial: f32,
+    bilateral_filter_sigma_range: f32,
+    color_perturbation_coefficient: f32
+}
+
+impl Default for PIAPixelizer {
+    fn default() -> Self {
+        Self{
+            temperature_init: None,
+            temperature_final: 1.0,
+            m: 45.0, // m is set to 45 in the paper
+            alpha: 0.7,
+            epsilon_palette: 1.0,
+            epsilon_cluster: 0.25,
+            post_process_saturation: 1.1, // post_process_saturation is set to 1.1 in the paper
+            laplacian_smoothing_factor: 0.4,
+            bilateral_filter_sigma_spatial: 0.87,
+            bilateral_filter_sigma_range: 0.87,
+            color_perturbation_coefficient: 0.8
+        }
+    }
 }
 
 impl PIAPixelizer {
-    // m is set to 45 in the paper
-    // post_process_saturation is set to 1.1 in the paper
-    pub fn new(temperature_init: Option<f32>, temperature_final: f32, m: f32, alpha: f32, epsilon_palette: f32, epsilon_cluster: f32, post_process_saturation: f32) -> Self {
+    pub fn new(temperature_init: Option<f32>, temperature_final: f32, m: f32, alpha: f32) -> Self {
         Self {
             temperature_init,
             temperature_final,
             m,
             alpha,
-            epsilon_palette,
-            epsilon_cluster,
-            post_process_saturation
+            ..Default::default()
         }
     }
 }
@@ -44,7 +62,6 @@ struct SuperPixel{
     position: (f32, f32),
     palette_color: Lab,
     pixels: HashSet<(u32, u32)>,
-    original_position: (f32, f32),
     p_s: f32,
     p_c: Vec<f32>,
     sp_color: Lab
@@ -54,14 +71,12 @@ fn lab_distance(lab1: &Lab, lab2: &Lab) -> f32{
     let l_diff = lab1.l - lab2.l;
     let a_diff = lab1.a - lab2.a;
     let b_diff = lab1.b - lab2.b;
-
     (l_diff * l_diff + a_diff * a_diff + b_diff * b_diff).sqrt()
 }
 
 impl SuperPixel{
     fn new(position: (f32, f32), palette_color: Lab, num_sp: usize) -> Self{
         let pixels = HashSet::new();
-        let original_position = position;
         let p_s = 1.0 / num_sp as f32;
         let sp_color = Lab::default();
 
@@ -71,7 +86,6 @@ impl SuperPixel{
             position,
             palette_color,
             pixels,
-            original_position,
             p_s,
             p_c,
             sp_color
@@ -125,13 +139,13 @@ impl SuperPixel{
 #[derive(Debug)]
 struct Palette{
     colors: Vec<Lab>,
-    probabilities: Vec<f32> // invariants: the sum of the probabilities is 1
+    probabilities: Vec<f32> // invariants: the sum of the probabilities should be 1
 }
 
 impl Palette{
-    fn new(init_color : Lab) -> Self{
+    fn new(init_color : Lab, perturbation: Lab) -> Self{
         let mut colors = vec![init_color; 2];
-        colors[1] = Lab::from_components((colors[1].l + 1.0, colors[1].a+1.0, colors[1].b+1.0));
+        colors[1] += perturbation;
         let probabilities = vec![0.5; 2];
         Self{
             colors,
@@ -194,14 +208,37 @@ fn bilateral_filter_lab(img_lab: &Vec<Vec<Lab>>, sigma_spatial: f32, sigma_range
 }
 
 
+// Take a vector of Lab colors and return the eigenvector with the highest eigenvalue
+fn pca_lab(lab_vec : &Vec<Lab>) -> (Array1<f64>, f64) {
+    // Convert to ndarry
+    let rows = lab_vec.len();
+    let mut data : Array2<f64> = Array2::zeros((rows, 3));
+    for (i, color) in lab_vec.iter().enumerate(){
+        data[(i, 0)] = color.l as f64;
+        data[(i, 1)] = color.a as f64;
+        data[(i, 2)] = color.b as f64;
+    }
+
+    // Compute PCA: center, covariance matrix, eigen decomposition
+    let means = data.mean_axis(ndarray::Axis(0)).unwrap();
+    let centered_data = data - &means.insert_axis(ndarray::Axis(0));
+
+    let covariance_matrix = centered_data.t().dot(&centered_data) / (rows as f64 - 1.0);
+    let (eigenvalues, eigenvector) = covariance_matrix.eigh(UPLO::Upper).unwrap();
+
+    (eigenvector.column(eigenvector.ncols() - 1).to_owned(), eigenvalues[eigenvalues.len() - 1])
+}
+
 struct PIAGlobal{
     superpixels: Vec<Vec<SuperPixel>>,
     clusters: Vec<(usize, usize)>,
     palette: Palette,
+    critical_temperature : f32,
+    perturbation: Lab
 }
 
 impl PIAGlobal{
-    fn new(w: u32, h: u32, lab_img: &Vec<Vec<Lab>>) -> Self{
+    fn new(w: u32, h: u32, lab_img: &Vec<Vec<Lab>>, color_perturbation_coefficient: f32) -> Self{
         let num_sp = (w * h) as usize;
         let mut superpixels = Vec::with_capacity(num_sp);
 
@@ -230,23 +267,31 @@ impl PIAGlobal{
             }
             superpixels.push(row_superpixels);
         }
+
+        let img_lab_flatter : Vec<Lab> = lab_img.iter().flatten().cloned().collect();
+        let (eigenvector, eigenvalue) = pca_lab(&img_lab_flatter);
+
         let clusters = vec![(0, 1); 1];
-        let palette = Palette::new(avg_lab_color);
+        let perturbation = Lab::from_components((eigenvector[0] as f32, eigenvector[1] as f32, eigenvector[2] as f32)) * color_perturbation_coefficient;
+        let palette = Palette::new(avg_lab_color, perturbation);
+
         Self{
             superpixels,
             clusters,
-            palette
+            palette,
+            critical_temperature: (2.0*eigenvalue as f32).sqrt(), // Section 4.1 in the paper. In the code, they take the square root 
+            perturbation
         }
     }
 
-    fn refine_superpixels(&mut self, img: &Vec<Vec<Lab>>, m: f32){
+    fn refine_superpixels(&mut self, img: &Vec<Vec<Lab>>, m: f32, laplacian_smoothing_factor: f32, bilateral_filter_sigma_spatial: f32, bilateral_filter_sigma_range: f32){
         for superpixel in self.superpixels.iter_mut().flatten(){
             superpixel.clear_pixels();
         }
 
         // Find best superpixel for each pixel
         let sp_pixels: Vec<_> = self.superpixels.iter_mut()
-                                                .map(|row| row.iter_mut().map(|sp| Vec::new()).collect::<Vec<_>>())
+                                                .map(|row| row.iter_mut().map(|_| Vec::new()).collect::<Vec<_>>())
                                                 .collect();
         let sp_pixels_mutex = Mutex::new(sp_pixels);
 
@@ -302,7 +347,7 @@ impl PIAGlobal{
                 }
                 new_x /= n as f32;
                 new_y /= n as f32;
-                superpixel.position = (new_x * 0.4 + 0.6 * superpixel.position.0, new_y * 0.4 + 0.6 * superpixel.position.1); //TODO: remove the magic constants
+                superpixel.position = (new_x * laplacian_smoothing_factor + (1.0-laplacian_smoothing_factor) * superpixel.position.0, new_y * laplacian_smoothing_factor + (1.0-laplacian_smoothing_factor) * superpixel.position.1);
             }
         }
 
@@ -311,7 +356,7 @@ impl PIAGlobal{
             row.iter().map(|superpixel| superpixel.sp_color).collect()
         }).collect();
 
-        let img_filtered = bilateral_filter_lab(&img_from_superpixels, 0.87, 0.87); //TODO: remove the magic constants
+        let img_filtered = bilateral_filter_lab(&img_from_superpixels, bilateral_filter_sigma_spatial, bilateral_filter_sigma_range);
 
         self.superpixels.iter_mut().enumerate().for_each(|(y, row)| {
             row.iter_mut().enumerate().for_each(|(x, superpixel)| {
@@ -355,8 +400,7 @@ impl PIAGlobal{
         }
 
         self.palette.colors = updated_colors;
-
-        return total_change < *epsilon_palette; //TODO: check whether I should not divide by the number of colors? 
+        return total_change < *epsilon_palette; // It seems like it is not necessary to divide by the number of colors, according to original source code.
     }
 
     fn expand_palette(&mut self,num_colors: &usize, epsilon_cluster: &f32){
@@ -403,7 +447,7 @@ impl PIAGlobal{
                 //TODO
                 // self.palette.colors[self.clusters[k].1] += perturb;
                 let current_color = self.palette.colors[self.clusters[k].1];
-                let perturbed_color = Lab::from_components((current_color.l + 1.0, current_color.a+1.0, current_color.b+1.0));
+                let perturbed_color =current_color + self.perturbation;
                 self.palette.colors[self.clusters[k].1] = perturbed_color;
             }
         }
@@ -449,12 +493,12 @@ impl Pixelizer for PIAPixelizer{
             return acc;
         });
 
-        let mut global = PIAGlobal::new(*width, *height, &lab_vec);
+        let mut global = PIAGlobal::new(*width, *height, &lab_vec, self.color_perturbation_coefficient);
 
         let mut temperature = match self.temperature_init {
             Some(t) => t,
             None => {
-                35.0 //TODO: PCA here
+                1.1 * global.critical_temperature // Section 4.1 in the paper
             }
         };
 
@@ -465,7 +509,7 @@ impl Pixelizer for PIAPixelizer{
             println!("Temperature: {}", temperature);
             iter += 1;
             // refine superpixels
-            global.refine_superpixels(&lab_vec, self.m);
+            global.refine_superpixels(&lab_vec, self.m, self.laplacian_smoothing_factor, self.bilateral_filter_sigma_spatial, self.bilateral_filter_sigma_range);
             // associate
             global.associate(temperature);
             // refine colors in the palette
@@ -503,13 +547,17 @@ mod tests {
     fn test_size() {
         let img = image::open("examples/images/ferris_3d.png").unwrap();
         let pixelizer = PIAPixelizer{
-            temperature_init: Some(35.0),
+            temperature_init: None,
             temperature_final: 1.0,
             m: 45.0,
             alpha: 0.7,
             epsilon_palette: 1.0,
             epsilon_cluster: 0.25,
-            post_process_saturation: 1.1
+            post_process_saturation: 1.1,
+            laplacian_smoothing_factor: 0.4,
+            bilateral_filter_sigma_spatial: 0.87,
+            bilateral_filter_sigma_range: 0.87,
+            color_perturbation_coefficient: 0.8
         };
         let width = 64;
         let height = 64;
@@ -523,36 +571,44 @@ mod tests {
         assert_eq!(size_pixelized, (width, height));
     }
 
-    // fn equal_dynamic_image(img1: &DynamicImage, img2: &DynamicImage) -> Result<bool, ImageError>{
-    //     if img1.width() != img2.width() || img1.height() != img2.height(){
-    //         return Ok(false);
-    //     }
-    //     let img_buf_1 = img1.to_rgb8();
-    //     let img_buf_2 = img2.to_rgb8();
-    //     Ok(img_buf_1.as_raw() == img_buf_2.as_raw())
-    // }
+    fn equal_dynamic_image(img1: &DynamicImage, img2: &DynamicImage) -> Result<bool, ImageError>{
+        if img1.width() != img2.width() || img1.height() != img2.height(){
+            return Ok(false);
+        }
+        let img_buf_1 = img1.to_rgb8();
+        let img_buf_2 = img2.to_rgb8();
+        Ok(img_buf_1.as_raw() == img_buf_2.as_raw())
+    }
 
-    // #[test]
-    // fn test_uniform(){
-    //     // Uniform image should be pixelized exactly the same, if given the same width and height
-    //     let img = image::open("examples/images/uniform.png").unwrap();
-    //     let pixelizer = super::KmeansPixelizer{
-    //         num_runs: 8,
-    //         max_iter: 20,
-    //         color_type: ColorType::Rgb
-    //     };
-    //     let width = img.width();
-    //     let height = img.height();
-    //     let num_colors = 8;
-    //     let pixelized = pixelizer.pixelize(&img, &width, &height, &num_colors);
+    #[test]
+    fn test_uniform(){
+        // Uniform image should be pixelized exactly the same, if given the same width and height
+        let img = image::open("examples/images/uniform.png").unwrap();
+        let pixelizer = PIAPixelizer{
+            temperature_init: Some(35.0),
+            temperature_final: 1.0,
+            m: 45.0,
+            alpha: 0.7,
+            epsilon_palette: 1.0,
+            epsilon_cluster: 0.25,
+            post_process_saturation: 1.0,
+            laplacian_smoothing_factor: 0.4,
+            bilateral_filter_sigma_spatial: 0.87,
+            bilateral_filter_sigma_range: 0.87,
+            color_perturbation_coefficient: 0.8
+        };
+        let width = img.width()/2; // can't have the same size
+        let height = img.height()/2; // can't have the same size
+        let num_colors = 8;
+        let pixelized = pixelizer.pixelize(&img, &width, &height, &num_colors);
+        let path_out = "examples/images/uniform_pixelized_PIA.png";
+        pixelized.save(path_out).unwrap();
+        let pixelized = pixelized.resize(width*2, height*2, image::imageops::FilterType::Nearest);
 
-    //     let path_out = "examples/images/uniform_pixelized.png";
-    //     pixelized.save(path_out).unwrap();
-
-    //     let size_pixelized = (pixelized.width(), pixelized.height());
-    //     assert_eq!(size_pixelized, (width, height));
-    //     if let Ok(b) = equal_dynamic_image(&img, &pixelized){
-    //         assert!(b, "the uniform image is not pixelized to itself");
-    //     }
-    // }
+        let size_pixelized = (pixelized.width(), pixelized.height());
+        assert_eq!(size_pixelized, (width*2, height*2));
+        if let Ok(b) = equal_dynamic_image(&img, &pixelized){
+            assert!(b, "the uniform image is not pixelized to itself");
+        }
+    }
 }
