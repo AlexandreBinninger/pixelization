@@ -24,7 +24,8 @@ pub struct PIAPixelizer{
     laplacian_smoothing_factor: f32,
     bilateral_filter_sigma_spatial: f32,
     bilateral_filter_sigma_range: f32,
-    color_perturbation_coefficient: f32
+    color_perturbation_coefficient: f32,
+    verbose: bool
 }
 
 impl Default for PIAPixelizer {
@@ -40,20 +41,26 @@ impl Default for PIAPixelizer {
             laplacian_smoothing_factor: 0.4,
             bilateral_filter_sigma_spatial: 0.87,
             bilateral_filter_sigma_range: 0.87,
-            color_perturbation_coefficient: 0.8
+            color_perturbation_coefficient: 0.8,
+            verbose: false
         }
     }
 }
 
 impl PIAPixelizer {
-    pub fn new(temperature_init: Option<f32>, temperature_final: f32, m: f32, alpha: f32) -> Self {
+    pub fn new(temperature_init: Option<f32>, temperature_final: f32, m: f32, alpha: f32, verbose:bool) -> Self {
         Self {
             temperature_init,
             temperature_final,
             m,
             alpha,
+            verbose,
             ..Default::default()
         }
+    }
+
+    pub fn set_verbose(&mut self, verbose: bool){
+        self.verbose = verbose;
     }
 }
 
@@ -379,9 +386,6 @@ impl PIAGlobal{
                 self.palette.probabilities[k] += prob * superpixel.p_s;
             }
         }
-
-        println!("{:?}", self.palette.probabilities);
-        println!("{}", self.palette.probabilities.iter().sum::<f32>());
     }
 
     fn refine_palette(&mut self, epsilon_palette: &f32) -> bool{
@@ -444,8 +448,6 @@ impl PIAGlobal{
             self.palette.probabilities = new_palette_probs;
         } else{
             for k in 0..cluster_size{
-                //TODO
-                // self.palette.colors[self.clusters[k].1] += perturb;
                 let current_color = self.palette.colors[self.clusters[k].1];
                 let perturbed_color =current_color + self.perturbation;
                 self.palette.colors[self.clusters[k].1] = perturbed_color;
@@ -504,9 +506,10 @@ impl Pixelizer for PIAPixelizer{
 
         let mut iter = 0;
         while temperature > self.temperature_final{
-            
-            println!("Iteration: {}", iter);
-            println!("Temperature: {}", temperature);
+            if self.verbose{
+                println!("Iteration: {}", iter);
+                println!("Temperature: {}", temperature);
+            }
             iter += 1;
             // refine superpixels
             global.refine_superpixels(&lab_vec, self.m, self.laplacian_smoothing_factor, self.bilateral_filter_sigma_spatial, self.bilateral_filter_sigma_range);
@@ -517,14 +520,18 @@ impl Pixelizer for PIAPixelizer{
 
             // if palette converged, reduce temperature and expand palette if necessary
             if to_expand{
-                println!("Expanding palette");
+                if self.verbose{
+                    println!("Expanding palette");
+                }
                 temperature *= self.alpha;
                 if global.get_current_nb_colors() < *num_colors{
                     global.expand_palette(num_colors, &self.epsilon_cluster);
                 }
             }
             else {
-                println!("Not expanding palette");
+                if self.verbose{
+                    println!("Not expanding palette");
+                }
             }
         }
         // post process
@@ -557,7 +564,8 @@ mod tests {
             laplacian_smoothing_factor: 0.4,
             bilateral_filter_sigma_spatial: 0.87,
             bilateral_filter_sigma_range: 0.87,
-            color_perturbation_coefficient: 0.8
+            color_perturbation_coefficient: 0.8,
+            verbose: true
         };
         let width = 64;
         let height = 64;
@@ -595,7 +603,8 @@ mod tests {
             laplacian_smoothing_factor: 0.4,
             bilateral_filter_sigma_spatial: 0.87,
             bilateral_filter_sigma_range: 0.87,
-            color_perturbation_coefficient: 0.8
+            color_perturbation_coefficient: 0.8,
+            verbose: true
         };
         let width = img.width()/2; // can't have the same size
         let height = img.height()/2; // can't have the same size

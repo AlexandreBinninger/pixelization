@@ -2,7 +2,7 @@ use std::error::Error;
 
 use clap::{Command, Arg, ArgGroup, ArgAction, ValueEnum, value_parser};
 use image::{DynamicImage, imageops::FilterType};
-use pixelization::{ColorType, KmeansPixelizer, Pixelizer, scale_to_size, CropMethod};
+use pixelization::{ColorType, KmeansPixelizer, PIAPixelizer, Pixelizer, scale_to_size, CropMethod};
 
 use minifb::{Key, KeyRepeat, Window, WindowOptions};
 
@@ -49,9 +49,9 @@ fn main() -> Result<(), Box<dyn Error>>{
             .action(ArgAction::Set)
             .long("method")
             .value_name("PixelizationMethod")
-            .help("Tell which pixelization method to use. Valid are \"kmeans\"")
+            .help("Tell which pixelization method to use. Valid are \"kmeans\" and \"pia\".")
             .value_parser(value_parser!(PixelizationMethod))
-            .default_value("kmeans")
+            .default_value("pia")
     )
         .arg(Arg::new("scale")
             .short('s')
@@ -96,6 +96,11 @@ fn main() -> Result<(), Box<dyn Error>>{
             .value_name("ColorSpace")
             .value_parser(value_parser!(ColorSpace))
             .default_value("lab"))
+        .arg(Arg::new("verbose")
+            .short('v')
+            .long("verbose")
+            .help("Prints debug information verbosely.")
+            .action(ArgAction::SetTrue))
         .group(ArgGroup::new("dimension")
             .args(&["scale", "size"])
             .required(true))
@@ -132,20 +137,27 @@ fn main() -> Result<(), Box<dyn Error>>{
             let kmeans_pixelizer = KmeansPixelizer::new(num_runs, max_iter, color_type); //TODO: make it depending on arguments
             kmeans_pixelizer.pixelize(&img, &w, &h, &n_colors)
         },
-        Some(PixelizationMethod::PIA) => return Err("PIA method is not implemented".into()),
+        Some(PixelizationMethod::PIA) => {
+            let mut pia_pixelizer = PIAPixelizer::default();
+            let verbose = *matches.get_one::<bool>("verbose").unwrap_or(&false);
+            pia_pixelizer.set_verbose(verbose);
+            pia_pixelizer.pixelize(&img, &w, &h, &n_colors)
+        },
         None => return Err("Method is not implemented".into())
     };
 
 
-    // Show
-    if *matches.get_one::<bool>("show").unwrap_or(&false){
-        show(&img, &img_pixelized);
-    }
 
     // Save
     if let Some(output) = output {
         println!("Output will be saved to: {}", output);
         img_pixelized.save(output)?;
+        // Show
+        if *matches.get_one::<bool>("show").unwrap_or(&false){
+            show(&img, &img_pixelized);
+        }
+    } else{
+        show(&img, &img_pixelized);
     }
 
 
