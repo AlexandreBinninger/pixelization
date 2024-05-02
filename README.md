@@ -7,11 +7,11 @@
 - [ ] make a test that takes an already pixelized image, scale it up, pixelize it, and check that they are the same
 - [x] make a standalone app
 - [ ] make documentation
-- [ ] PCA for the delta perturbation and for the initialization of the temperature
+- [x] PCA for the delta perturbation and for the initialization of the temperature
 - [ ] PIA: error if less than two colors
-- [ ] add some specific values to the data structure
+- [x] add some specific values to the data structure
 
 
-Tell to install openblas:
+Tell to install openblas?:
 
 sudo apt-get install libopenblas-dev
