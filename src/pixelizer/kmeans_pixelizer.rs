@@ -4,12 +4,16 @@ use super::super::Pixelizer;
 use kmeans_colors::{get_kmeans, Kmeans};
 use palette::{rgb::Rgb, FromColor, IntoColor, Lab, Srgb};
 use super::ColorType;
+use super::PixelizationError;
 
 enum ColorVec {
     LabVec(Vec<Lab>),
     RgbVec(Vec<Rgb>),
 }
 
+/// A Pixelizer that uses K-Means clustering to find the dominant color palette.
+///
+/// This method is generally faster than PIA but may result in less structural coherence.
 pub struct KmeansPixelizer{
     num_runs: u32,
     max_iter : usize,
@@ -17,6 +21,12 @@ pub struct KmeansPixelizer{
 }
 
 impl KmeansPixelizer {
+    /// Creates a new K-Means pixelizer.
+    ///
+    /// # Arguments
+    /// * `num_runs` - How many times to run k-means (to avoid local minima). Default suggestion: 3.
+    /// * `max_iter` - Maximum iterations per run. Default suggestion: 20.
+    /// * `color_type` - Whether to calculate distance in RGB or Lab space.
     pub fn new(num_runs: u32, max_iter: usize, color_type: ColorType) -> Self {
         Self {
             num_runs,
@@ -96,10 +106,12 @@ fn kmeans_rgb(rgb_vec: Vec<Rgb>, num_colors: &usize, num_runs: &u32, max_iter: &
 }
 
 impl Pixelizer for KmeansPixelizer{
-    fn pixelize(&self, img: &DynamicImage,  width : &u32, height: &u32,  num_colors : &usize) -> DynamicImage{
+    fn pixelize(&self, img: &DynamicImage,  width : u32, height: u32,  num_colors : usize) -> Result<DynamicImage, PixelizationError>{
         let img_width = img.width();
         let img_height =  img.height();
-        assert!(*width <= img_width && *height <= img_height, "Provided width and height must be smaller or equal to the image dimensions");
+        if width > img_width || height > img_height{
+            return Err(PixelizationError::DimensionError("Provided width and height must be smaller or equal to the image dimensions".to_string()));
+        }
 
         let rgb_img: ImageBuffer<image::Rgb<u8>, Vec<u8>> = img.to_rgb8();
 
@@ -115,16 +127,16 @@ impl Pixelizer for KmeansPixelizer{
             }
         };
 
-        let mut img_buffer = ImageBuffer::new(*width, *height);
+        let mut img_buffer = ImageBuffer::new(width, height);
         for (x, y, pixel) in img_buffer.enumerate_pixels_mut(){
             // x in 0..width, y in 0..height
-            let start_x_orig = (img_width/ *width) * x;
-            let end_x_orig = (img_width/ *width) * (x+1);
-            let start_y_orig = (img_height/ *height) * y;
-            let end_y_orig = (img_height/ *height) * (y+1);
+            let start_x_orig = (img_width/ width) * x;
+            let end_x_orig = (img_width/ width) * (x+1);
+            let start_y_orig = (img_height/ height) * y;
+            let end_y_orig = (img_height/ height) * (y+1);
 
 
-            let mut color_indices = vec![0 as usize; *num_colors];
+            let mut color_indices = vec![0 as usize; num_colors];
             for x_orig in start_x_orig..end_x_orig{
                 for y_orig in start_y_orig..end_y_orig{
                     let index = (y_orig*img_width + x_orig) as usize;
@@ -143,7 +155,7 @@ impl Pixelizer for KmeansPixelizer{
             }
         }
         let dynamic_image = DynamicImage::ImageRgb8(img_buffer);
-        dynamic_image   
+        Ok(dynamic_image)   
     }
 }
 
@@ -156,7 +168,7 @@ mod tests {
 
     #[test]
     fn test_size() {
-        let img = image::open("examples/images/ferris_3d.png").unwrap();
+        let img = image::open("assets/images/ferris_3d.png").unwrap();
         let pixelizer = super::KmeansPixelizer{
             num_runs: 4,
             max_iter: 20,
@@ -165,12 +177,13 @@ mod tests {
         let width = 64;
         let height = 64;
         let num_colors = 8;
-        let pixelized = pixelizer.pixelize(&img, &width, &height, &num_colors);
+        let pixelized = pixelizer.pixelize(&img, width, height, num_colors);
 
-        let path_out = "examples/images/ferris_3d_pixelized.png";
-        pixelized.save(path_out).unwrap();
+        let path_out = "assets/images/ferris_3d_pixelized.png";
+        let image_out = pixelized.unwrap();
+        image_out.save(path_out).unwrap();
 
-        let size_pixelized = (pixelized.width(), pixelized.height());
+        let size_pixelized = (image_out.width(), image_out.height());
         assert_eq!(size_pixelized, (width, height));
     }
 
@@ -186,7 +199,7 @@ mod tests {
     #[test]
     fn test_uniform(){
         // Uniform image should be pixelized exactly the same, if given the same width and height
-        let img = image::open("examples/images/uniform.png").unwrap();
+        let img = image::open("assets/tests/uniform.png").unwrap();
         let pixelizer = super::KmeansPixelizer{
             num_runs: 8,
             max_iter: 20,
@@ -195,14 +208,15 @@ mod tests {
         let width = img.width();
         let height = img.height();
         let num_colors = 8;
-        let pixelized = pixelizer.pixelize(&img, &width, &height, &num_colors);
+        let pixelized = pixelizer.pixelize(&img, width, height, num_colors);
 
-        let path_out = "examples/images/uniform_pixelized.png";
-        pixelized.save(path_out).unwrap();
-
-        let size_pixelized = (pixelized.width(), pixelized.height());
+        let path_out = "assets/tests/uniform_pixelized.png";
+        let image_out = pixelized.unwrap();
+        image_out.save(path_out).unwrap();
+        
+        let size_pixelized = (image_out.width(), image_out.height());
         assert_eq!(size_pixelized, (width, height));
-        if let Ok(b) = equal_dynamic_image(&img, &pixelized){
+        if let Ok(b) = equal_dynamic_image(&img, &image_out){
             assert!(b, "the uniform image is not pixelized to itself");
         }
     }

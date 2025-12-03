@@ -6,11 +6,10 @@ use ndarray::{Array1, Array2};
 use ndarray_linalg::{Eigh, UPLO};
 
 use super::super::Pixelizer;
+use super::PixelizationError;
 use palette::{FromColor, IntoColor, Lab, Srgb};
 use std::collections::HashSet;
 use rayon::prelude::*;
-use std::sync::Mutex;
-
 
 
 pub struct PIAPixelizer{
@@ -107,9 +106,8 @@ impl SuperPixel{
 
         d_lab + m * ((nb_pixels_out as f32) / (nb_pixels_in as f32)).sqrt() * d_spatial
     }
-
-    fn add_pixels(&mut self, pixels: &Vec<(u32, u32)>){
-        self.pixels.extend(pixels);
+    fn add_pixel(&mut self, x: u32, y: u32) {
+        self.pixels.insert((x, y));
     }
 
     fn clear_pixels(&mut self){
@@ -291,85 +289,117 @@ impl PIAGlobal{
         }
     }
 
-    fn refine_superpixels(&mut self, img: &Vec<Vec<Lab>>, m: f32, laplacian_smoothing_factor: f32, bilateral_filter_sigma_spatial: f32, bilateral_filter_sigma_range: f32){
-        for superpixel in self.superpixels.iter_mut().flatten(){
+    fn refine_superpixels(
+        &mut self,
+        img: &Vec<Vec<Lab>>,
+        m: f32,
+        laplacian_smoothing_factor: f32,
+        bilateral_filter_sigma_spatial: f32,
+        bilateral_filter_sigma_range: f32,
+    ) {
+        for superpixel in self.superpixels.iter_mut().flatten() {
             superpixel.clear_pixels();
         }
+        
+        let superpixels_read_only = &self.superpixels; 
 
-        // Find best superpixel for each pixel
-        let sp_pixels: Vec<_> = self.superpixels.iter_mut()
-                                                .map(|row| row.iter_mut().map(|_| Vec::new()).collect::<Vec<_>>())
-                                                .collect();
-        let sp_pixels_mutex = Mutex::new(sp_pixels);
+        let assignments: Vec<(u32, u32, usize, usize)> = img
+            .par_iter()
+            .enumerate()
+            .flat_map(|(y, row)| {
+                row.par_iter().enumerate().map(move |(x, _)| {
+                    let mut min_cost = std::f32::MAX;
+                    let mut min_sp_index = (0, 0);
 
-        img.par_iter().enumerate().for_each(|(y, row)| {
-            row.iter().enumerate().for_each(|(x, _)| {
-                let mut min_cost = std::f32::MAX;
-                let mut min_sp_index = (0, 0);
-                for (y_sp, superpixel_row) in self.superpixels.iter().enumerate(){
-                    for (x_sp, superpixel) in superpixel_row.iter().enumerate(){
-                        let cost = superpixel.cost(x as u32, y as u32, img, m, 1, 1);
-                        if cost < min_cost{
-                            min_cost = cost;
-                            min_sp_index = (x_sp, y_sp);
+                    for (y_sp, superpixel_row) in superpixels_read_only.iter().enumerate() {
+                        for (x_sp, superpixel) in superpixel_row.iter().enumerate() {
+                            let cost = superpixel.cost(x as u32, y as u32, img, m, 1, 1);
+                            if cost < min_cost {
+                                min_cost = cost;
+                                min_sp_index = (x_sp, y_sp);
+                            }
                         }
                     }
-                }
-                let mut sp_pixels = sp_pixels_mutex.lock().unwrap();
-                sp_pixels[min_sp_index.1][min_sp_index.0].push((x as u32, y as u32));
-            });
-        });
+                    (x as u32, y as u32, min_sp_index.0, min_sp_index.1)
+                })
+            })
+            .collect();
 
-        let sp_pixels = sp_pixels_mutex.into_inner().unwrap();
+        // SEQUENTIAL PHASE: Write assignments
+        for (x, y, sp_x, sp_y) in assignments {
+            self.superpixels[sp_y][sp_x].add_pixel(x, y);
+        }
 
-        for (y, row) in sp_pixels.into_iter().enumerate(){
-            for (x, pixels) in row.into_iter().enumerate(){
-                self.superpixels[y][x].add_pixels(&pixels);
+        // Update positions and colors
+        for superpixel in self.superpixels.iter_mut().flatten() {
+            if !superpixel.pixels.is_empty() {
+                superpixel.update_pos();
+                superpixel.update_sp_color(img);
             }
         }
 
-        // Refine colors and positions for superpixels
-        for superpixel in self.superpixels.iter_mut().flatten(){
-            superpixel.update_pos();
-            superpixel.update_sp_color(img);
-        }
-
-        let in_image = |x: f32, y:f32| x >=0. && y >= 0. && x < img[0].len() as f32 && y < img.len() as f32;
+        let in_image = |x: f32, y: f32| {
+            x >= 0. && y >= 0. && x < img[0].len() as f32 && y < img.len() as f32
+        };
 
         // Laplacian smoothing
         let x_shift = vec![-1., 0., 1., 0.];
         let y_shift = vec![0., -1., 0., 1.];
 
-        for row in self.superpixels.iter_mut(){
-            for superpixel in row.iter_mut(){
+        let current_positions: Vec<Vec<(f32, f32)>> = self.superpixels.iter()
+            .map(|row| row.iter().map(|sp| sp.position).collect())
+            .collect();
+
+        for (y, row) in self.superpixels.iter_mut().enumerate() {
+            for (x, superpixel) in row.iter_mut().enumerate() {
                 let (mut new_x, mut new_y, mut n) = (0.0, 0.0, 0);
-                for (dx, dy) in x_shift.iter().zip(y_shift.iter()){
-                    let x_neigh = superpixel.position.0 + dx;
-                    let y_neigh = superpixel.position.1 + dy;
-                    if in_image(x_neigh, y_neigh){
+                
+                for (dx, dy) in x_shift.iter().zip(y_shift.iter()) {
+                    let current_pos = current_positions[y][x];
+                    let x_neigh = current_pos.0 + dx;
+                    let y_neigh = current_pos.1 + dy;
+
+                    if in_image(x_neigh, y_neigh) {
                         new_x += x_neigh;
                         new_y += y_neigh;
                         n += 1;
                     }
                 }
-                new_x /= n as f32;
-                new_y /= n as f32;
-                superpixel.position = (new_x * laplacian_smoothing_factor + (1.0-laplacian_smoothing_factor) * superpixel.position.0, new_y * laplacian_smoothing_factor + (1.0-laplacian_smoothing_factor) * superpixel.position.1);
+                
+                if n > 0 {
+                    new_x /= n as f32;
+                    new_y /= n as f32;
+                    superpixel.position = (
+                        new_x * laplacian_smoothing_factor
+                            + (1.0 - laplacian_smoothing_factor) * superpixel.position.0,
+                        new_y * laplacian_smoothing_factor
+                            + (1.0 - laplacian_smoothing_factor) * superpixel.position.1,
+                    );
+                }
             }
         }
 
         // Bilateral filtering
-        let img_from_superpixels : Vec<Vec<Lab>> = self.superpixels.iter().map(|row|{
-            row.iter().map(|superpixel| superpixel.sp_color).collect()
-        }).collect();
+        let img_from_superpixels: Vec<Vec<Lab>> = self
+            .superpixels
+            .iter()
+            .map(|row| row.iter().map(|superpixel| superpixel.sp_color).collect())
+            .collect();
 
-        let img_filtered = bilateral_filter_lab(&img_from_superpixels, bilateral_filter_sigma_spatial, bilateral_filter_sigma_range);
+        let img_filtered = bilateral_filter_lab(
+            &img_from_superpixels,
+            bilateral_filter_sigma_spatial,
+            bilateral_filter_sigma_range,
+        );
 
-        self.superpixels.iter_mut().enumerate().for_each(|(y, row)| {
-            row.iter_mut().enumerate().for_each(|(x, superpixel)| {
-                superpixel.sp_color = img_filtered[y][x];
+        self.superpixels
+            .iter_mut()
+            .enumerate()
+            .for_each(|(y, row)| {
+                row.iter_mut().enumerate().for_each(|(x, superpixel)| {
+                    superpixel.sp_color = img_filtered[y][x];
+                });
             });
-        });
     }
 
     fn associate(&mut self, temperature: f32){
@@ -407,11 +437,11 @@ impl PIAGlobal{
         return total_change < *epsilon_palette; // It seems like it is not necessary to divide by the number of colors, according to original source code.
     }
 
-    fn expand_palette(&mut self,num_colors: &usize, epsilon_cluster: &f32){
+    fn expand_palette(&mut self,num_colors: usize, epsilon_cluster: &f32){
         let cluster_size = self.clusters.len();
-        if cluster_size < *num_colors{
+        if cluster_size < num_colors{
             for k in 0..cluster_size{
-                if self.clusters.len() < *num_colors{
+                if self.clusters.len() < num_colors{
                     let (i, j) = self.clusters[k];
                     let color_i = self.palette.colors[i];
                     let color_j = self.palette.colors[j];
@@ -431,9 +461,9 @@ impl PIAGlobal{
             }
         }
         let cluster_size = self.clusters.len();
-        if cluster_size >= *num_colors{
-            let mut new_palette_colors = Vec::with_capacity(*num_colors);
-            let mut new_palette_probs = Vec::with_capacity(*num_colors);
+        if cluster_size >= num_colors{
+            let mut new_palette_colors = Vec::with_capacity(num_colors);
+            let mut new_palette_probs = Vec::with_capacity(num_colors);
             for k in 0..cluster_size{
                 let (i, j) = self.clusters[k];
                 let color_i = self.palette.colors[i];
@@ -480,7 +510,12 @@ impl PIAGlobal{
 
 
 impl Pixelizer for PIAPixelizer{
-    fn pixelize(&self, img: &DynamicImage, width : &u32, height: &u32,  num_colors : &usize) -> DynamicImage{
+    fn pixelize(&self, img: &DynamicImage, width : u32, height: u32,  num_colors : usize) -> Result<DynamicImage, PixelizationError>{
+        if (num_colors < 2) || (num_colors > 256){
+            return Err(PixelizationError::ColorError("Number of colors must be between 2 and 256".to_string()));
+        }
+
+         // Convert image to Lab color space
         let rgb_image = img.to_rgb8();
         let width_orig = rgb_image.width();
         let height_orig = rgb_image.height();
@@ -495,7 +530,7 @@ impl Pixelizer for PIAPixelizer{
             return acc;
         });
 
-        let mut global = PIAGlobal::new(*width, *height, &lab_vec, self.color_perturbation_coefficient);
+        let mut global = PIAGlobal::new(width, height, &lab_vec, self.color_perturbation_coefficient);
 
         let mut temperature = match self.temperature_init {
             Some(t) => t,
@@ -524,7 +559,7 @@ impl Pixelizer for PIAPixelizer{
                     println!("Expanding palette");
                 }
                 temperature *= self.alpha;
-                if global.get_current_nb_colors() < *num_colors{
+                if global.get_current_nb_colors() < num_colors{
                     global.expand_palette(num_colors, &self.epsilon_cluster);
                 }
             }
@@ -538,7 +573,7 @@ impl Pixelizer for PIAPixelizer{
         let img_out = global.get_img(&self.post_process_saturation);
 
         // return image
-        img_out
+        Ok(img_out)
     }
 }
 
@@ -552,7 +587,7 @@ mod tests {
 
     #[test]
     fn test_size() {
-        let img = image::open("examples/images/ferris_3d.png").unwrap();
+        let img = image::open("assets/images/ferris_3d.png").unwrap();
         let pixelizer = PIAPixelizer{
             temperature_init: None,
             temperature_final: 1.0,
@@ -570,12 +605,13 @@ mod tests {
         let width = 64;
         let height = 64;
         let num_colors = 8;
-        let pixelized = pixelizer.pixelize(&img, &width, &height, &num_colors);
+        let pixelized = pixelizer.pixelize(&img, width, height, num_colors);
 
-        let path_out = "examples/images/ferris_3d_PIA_64_8.png";
-        pixelized.save(path_out).unwrap();
+        let path_out = "assets/images/ferris_3d_PIA_64_8.png";
+        let image_out = pixelized.unwrap();
+        image_out.save(path_out).unwrap();
 
-        let size_pixelized = (pixelized.width(), pixelized.height());
+        let size_pixelized = (image_out.width(), image_out.height());
         assert_eq!(size_pixelized, (width, height));
     }
 
@@ -591,7 +627,7 @@ mod tests {
     #[test]
     fn test_uniform(){
         // Uniform image should be pixelized exactly the same, if given the same width and height
-        let img = image::open("examples/images/uniform.png").unwrap();
+        let img = image::open("assets/tests/uniform.png").unwrap();
         let pixelizer = PIAPixelizer{
             temperature_init: Some(35.0),
             temperature_final: 1.0,
@@ -609,10 +645,11 @@ mod tests {
         let width = img.width()/2; // can't have the same size
         let height = img.height()/2; // can't have the same size
         let num_colors = 8;
-        let pixelized = pixelizer.pixelize(&img, &width, &height, &num_colors);
-        let path_out = "examples/images/uniform_pixelized_PIA.png";
-        pixelized.save(path_out).unwrap();
-        let pixelized = pixelized.resize(width*2, height*2, image::imageops::FilterType::Nearest);
+        let pixelized = pixelizer.pixelize(&img, width, height, num_colors);
+        let path_out = "assets/tests/uniform_pixelized_PIA.png";
+        let image_out = pixelized.unwrap();
+        image_out.save(path_out).unwrap();
+        let pixelized = image_out.resize(width*2, height*2, image::imageops::FilterType::Nearest);
 
         let size_pixelized = (pixelized.width(), pixelized.height());
         assert_eq!(size_pixelized, (width*2, height*2));

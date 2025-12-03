@@ -1,17 +1,109 @@
-# TODO
+<!-- # Pixelization
+
+A Rust library for transforming images into pixel art. It implements advanced quantization algorithms for pixelization, including standard K-Means clustering and the paper [Pixelated Image Abstraction (PIA)](https://dl.acm.org/doi/10.5555/2330147.2330154), allowing for aesthetically pleasing, structure-aware downscaling and color palette generation.
 
 - [x] make a function that uses a scale factor. 
 - [x] Make it with crop options, and with a default implementation
-- [ ] Put the crop option in the argument of the main.rs
-- [ ] Add a naive nearest method?
-- [ ] make a test that takes an already pixelized image, scale it up, pixelize it, and check that they are the same
+- [x] Put the crop option in the argument of the main.rs
 - [x] make a standalone app
 - [ ] make documentation
-- [x] PCA for the delta perturbation and for the initialization of the temperature
-- [ ] PIA: error if less than two colors
-- [x] add some specific values to the data structure
+- [x] PIA: error if less than two colors
 
 
 Tell to install openblas?:
 
 sudo apt-get install libopenblas-dev
+
+
+```bash
+cargo run assets/images/ferris_3d.png --size 48,48
+```
+cargo run --features cli assets/images/ferris_3d.png --scale 11 -v -k 4 --crop_method no-crop --show
+ -->
+
+
+# Pixelization
+
+[![Crates.io](https://img.shields.io/crates/v/pixelization.svg)](https://crates.io/crates/pixelization)
+[![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+
+**Pixelization** is a high-performance Rust library and CLI tool for transforming images into pixel art. 
+
+It implements advanced quantization algorithms, including:
+1.  **K-Means Clustering:** A classic statistical approach to find the best color palette.
+2.  **Pixelated Image Abstraction (PIA):** An implementation of the paper [Pixelated Image Abstraction (Gerstner et al., 2012)](https://dl.acm.org/doi/10.5555/2330147.2330154), which utilizes superpixels and bilateral filtering to create aesthetically pleasing, structure-aware pixel art.
+
+## Example Output
+
+| Original | K-Means | PIA |
+| :---: | :---: | :---: |
+| <img src="assets/images/ferris_3d.png" alt="Original" width="256" height="256"> | <img src="assets/images/ferris_3d_Kmeans.png" alt="KMeans" width="256" height="256" style="image-rendering: pixelated;"> | <img src="assets/images/ferris_3d_PIA.png" alt="PIA" width="256" height="256" style="image-rendering: pixelated;"> |
+
+## Installation
+
+### As a CLI Tool
+
+You can install the binary directly from crates.io (once published) or from source:
+
+```bash
+# From source
+cargo install --path . --features cli
+```
+
+**System Requirements:**
+This library uses `ndarray-linalg`, which requires a BLAS backend.
+* **Ubuntu/Debian:** `sudo apt-get install libopenblas-dev gfortran`
+* **macOS:** The Accelerate framework is usually built-in, but you may need `gfortran` (via brew).
+* **Windows:** You may need to install a pre-compiled LAPACK/BLAS binary or use `vcpkg`.
+
+### As a Library
+
+Add this to your `Cargo.toml`:
+
+```toml
+[dependencies]
+pixelization = "0.1.0"
+
+
+## Usage
+
+### CLI
+
+```bash
+# Basic usage with PIA (default)
+pixelize input.jpg --scale 4 --n_colors 8
+
+# Using K-Means with specific output path
+pixelize input.jpg -o output.png --method kmeans --n_colors 16 --scale 2
+
+# Show the result in a window (requires --features cli)
+pixelize input.jpg --show
+```
+
+### Rust Code
+
+```rust
+use pixelization::{PIAPixelizer, Pixelizer};
+
+fn main() {
+    let img = image::open("assets/images/ferris_3d.png").unwrap();
+    
+    // Configure PIA
+    let mut pia = PIAPixelizer::default();
+    pia.set_verbose(true);
+
+    // Pixelize: (image, width, height, number_of_colors)
+    let result = pia.pixelize(&img, 64, 64, 8).unwrap();
+    
+    result.save("output.png").unwrap();
+}
+```
+
+## Algorithms
+
+* **K-Means:** Good for general color reduction. Fast.
+* **PIA:** Excellent for preserving shapes and cartoons. It uses an iterative process involving superpixels, graph cuts, and palette optimization.
+
+## License
+
+This project is licensed under the MIT License.

@@ -1,15 +1,15 @@
 [package]
 name = "pixelization"
 version = "0.1.0"
-edition = "2021"
+edition = "2024"
 authors = ["Alexandre Binninger"]
 homepage = "https://github.com/AlexandreBinninger/pixelization"
 repository = "https://github.com/AlexandreBinninger/pixelization"
 readme = "README.md"
 keywords = ["pixel", "pixelization", "pixelation", "pixelize", "pixelate", "quantization", "PIA", "kmeans", "lab", "color", "rgb"]
-categories = ["graphics", "multimedia::images", "mathematics"]
+categories = ["graphics", "multimedia::images", "mathematics", "rendering"]
 license = "MIT"
-description = """Multiple pixelization methods."""
+description = "A high-performance image quantization and pixelization library implementing K-Means and PIA (Pixelated Image Abstraction)."
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
@@ -22,24 +22,28 @@ path = "src/lib.rs"
 [[bin]]
 name = "pixelize"   # The name of the binary executable
 path = "src/main.rs" # Path to the source file of the binary
+required-features = ["cli"] # Only build binary if cli feature is on
 
 [dependencies.kmeans_colors]
-version = "0.6"
+version = "^0.6"
 features = ["palette"]
 
 [dependencies.palette]
-version = "0.7.3"
+version = "^0.7.3"
 default-features = false
 features = ["std"]
 
 [dependencies]
-image = "=0.24.9"
-clap = { version = "4.5.3", features = ["derive"] }
-minifb = "0.25"
-nalgebra = "0.32.5"
-rayon = "1.10.0"
-ndarray-linalg = "0.16.0"
-ndarray = "0.15.6"
+image = "^0.24.9"
+nalgebra = "^0.32.5"
+rayon = "^1.10.0"
+ndarray-linalg = "^0.16.0"
+ndarray = "^0.15.6"
+thiserror = "2.0.17"
+rand = "^0.8.5"
+clap = { version = "4.5", features = ["derive"], optional = true }
+minifb = { version = "0.25", optional = true }
 
-[dependencies.rand]
-version = "0.8.5"
+[features]
+default = []
+cli = ["clap", "minifb"] # Users run "cargo run --features cli"
