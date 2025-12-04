@@ -29,7 +29,7 @@ cargo install --path . --features cli
 **⚠️ System Requirements (Read before installing):**
 This library uses `ndarray-linalg`, which requires a BLAS backend.
 * **Ubuntu/Debian:** `sudo apt-get install libopenblas-dev gfortran`
-* **macOS:** `brew install openblas`, but you may need `gfortran` (via brew).
+* **macOS:** `brew install openblas`
 * **Windows:** You may need to install a pre-compiled LAPACK/BLAS binary or use `vcpkg`.
 
 ### As a Library
