@@ -36,7 +36,7 @@ pub fn scale_to_size<'a>(img: DynamicImage, scale: &u32, crop: CropMethod) -> (D
 }
 
 /// The color space used for calculating distances between colors for K-means pixelization.
-/// #[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy)]
 pub enum ColorType {
     /// Standard RGB space.
     Rgb,

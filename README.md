@@ -1,27 +1,3 @@
-<!-- # Pixelization
-
-A Rust library for transforming images into pixel art. It implements advanced quantization algorithms for pixelization, including standard K-Means clustering and the paper [Pixelated Image Abstraction (PIA)](https://dl.acm.org/doi/10.5555/2330147.2330154), allowing for aesthetically pleasing, structure-aware downscaling and color palette generation.
-
-- [x] make a function that uses a scale factor. 
-- [x] Make it with crop options, and with a default implementation
-- [x] Put the crop option in the argument of the main.rs
-- [x] make a standalone app
-- [ ] make documentation
-- [x] PIA: error if less than two colors
-
-
-Tell to install openblas?:
-
-sudo apt-get install libopenblas-dev
-
-
-```bash
-cargo run assets/images/ferris_3d.png --size 48,48
-```
-cargo run --features cli assets/images/ferris_3d.png --scale 11 -v -k 4 --crop_method no-crop --show
- -->
-
-
 # Pixelization
 
 [![Crates.io](https://img.shields.io/crates/v/pixelization.svg)](https://crates.io/crates/pixelization)

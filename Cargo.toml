@@ -9,7 +9,8 @@ readme = "README.md"
 keywords = ["pixel", "pixelization", "pixelation", "pixelize", "pixelate", "quantization", "PIA", "kmeans", "lab", "color", "rgb"]
 categories = ["graphics", "multimedia::images", "mathematics", "rendering"]
 license = "MIT"
-description = "A high-performance image quantization and pixelization library implementing K-Means and PIA (Pixelated Image Abstraction)."
+description = "An image quantization and pixelization library implementing K-Means and PIA (Pixelated Image Abstraction)."
+exclude = ["assets/*", ".gitignore"]
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 

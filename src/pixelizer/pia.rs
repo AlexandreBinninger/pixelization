@@ -1,5 +1,10 @@
-// Implementation of Pixelated Image Abstraction (PIA)
-// Link: https://pixl.cs.princeton.edu/pubs/Gerstner_2012_PIA/index.php
+/// Implementation of Pixelated Image Abstraction (PIA)
+///
+/// Based on the paper: "Pixelated Image Abstraction" by Gerstner et al. (2012)
+/// Link: <https://pixl.cs.princeton.edu/pubs/Gerstner_2012_PIA/index.php>
+///
+/// This pixelizer uses a superpixel-based approach combined with a genetic algorithm/simulated annealing
+/// strategy to optimize color palettes and shape boundaries simultaneously.
 
 use image::{DynamicImage, Rgba, GenericImage};
 use ndarray::{Array1, Array2};
@@ -11,23 +16,81 @@ use palette::{FromColor, IntoColor, Lab, Srgb};
 use std::collections::HashSet;
 use rayon::prelude::*;
 
-
-pub struct PIAPixelizer{
+/// A Pixelizer that relies on Pixelated Image Abstraction (PIA).
+pub struct PIAPixelizer {
+    /// The starting temperature for the simulated annealing process.
+    /// If `None`, it is calculated automatically based on the image's critical temperature (PCA eigenvalues).
     temperature_init: Option<f32>,
-    temperature_final: f32, // default should be 1.0
-    m : f32, // coefficient for the cost function, eq (1) of the paper,
-    alpha: f32, // default should be 0.7
-    epsilon_palette: f32, // default is 1
-    epsilon_cluster: f32, // default is 0.25
-    post_process_saturation: f32, // default is 1.1 in the paper
+
+    /// The stopping condition. The algorithm stops when the temperature drops below this value.
+    /// Lower values allow for finer convergence but increase processing time.
+    /// Default: 1.0
+    temperature_final: f32, 
+
+    /// Controls the relative weight that color similarity and pixel adjacency have on the solution (Eq. 1 in the paper).
+    /// * Higher values give more weight to spatial proximity.
+    /// * Lower values give more weight to color similarity.
+    /// Default: 45.0
+    m: f32, 
+
+    /// The cooling rate for the simulated annealing.
+    /// After every iteration, `temperature = temperature * alpha`.
+    /// * Range: (0.0, 1.0)
+    /// * Higher values (e.g., 0.9) mean slower cooling and better quality, but slower performance.
+    /// Default: 0.7
+    alpha: f32, 
+
+    /// Threshold for palette convergence.
+    /// If the total color change in the palette is less than this, the algorithm assumes the palette is stable for the current temperature.
+    /// Default: 1.0
+    epsilon_palette: f32, 
+
+    /// Threshold for splitting color clusters.
+    /// If two colors in the palette are closer than this distance (in Lab space), they may be merged or not split.
+    /// Default: 0.25
+    epsilon_cluster: f32, 
+
+    /// Saturation multiplier applied at the very end.
+    /// The paper suggests slightly boosting saturation to make the pixel art "pop".
+    /// * 1.0 = No change.
+    /// * > 1.0 = More saturated.
+    /// Default: 1.1
+    post_process_saturation: f32, 
+
+    /// Strength of the Laplacian smoothing applied to superpixel shapes.
+    /// Helps remove jagged edges from the superpixels.
+    /// Range: [0.0, 1.0]
+    /// Default: 0.4
     laplacian_smoothing_factor: f32,
+
+    /// Spatial sigma for the Bilateral Filter used during refinement.
+    /// Controls how much neighboring pixels influence the smoothing based on distance.
+    /// Default: 0.87
     bilateral_filter_sigma_spatial: f32,
+
+    /// Range (Color) sigma for the Bilateral Filter.
+    /// Controls how much neighboring pixels influence the smoothing based on color difference.
+    /// Default: 0.87
     bilateral_filter_sigma_range: f32,
+
+    /// Determines the magnitude of the random color perturbation applied when splitting clusters.
+    /// Default: 0.8
     color_perturbation_coefficient: f32,
+
+    /// If true, prints iteration progress and temperature to stdout.
     verbose: bool
 }
 
 impl Default for PIAPixelizer {
+    /// Creates a pixelizer with the parameters recommended by the original 
+    /// Gerstner et al. (2012) paper.
+    ///
+    /// # Defaults
+    /// * `m`: 45.0 (High compactness)
+    /// * `alpha`: 0.7 (Moderate cooling rate)
+    /// * `temperature_final`: 1.0
+    /// * `perturbation`: 0.8
+    /// * `post_process_saturation`: 1.1
     fn default() -> Self {
         Self{
             temperature_init: None,
@@ -47,6 +110,14 @@ impl Default for PIAPixelizer {
 }
 
 impl PIAPixelizer {
+    /// Creates a new PIA Pixelizer with custom main parameters.
+    ///
+    /// # Arguments
+    /// * `temperature_init` - Optional starting temp. Pass `None` to auto-calculate based on image content.
+    /// * `temperature_final` - Stop threshold (usually 1.0).
+    /// * `m` - Compactness factor. High = Square pixels, Low = Adaptive shapes.
+    /// * `alpha` - Cooling rate (0.0 - 1.0).
+    /// * `verbose` - Enable logging.
     pub fn new(temperature_init: Option<f32>, temperature_final: f32, m: f32, alpha: f32, verbose:bool) -> Self {
         Self {
             temperature_init,
@@ -58,6 +129,10 @@ impl PIAPixelizer {
         }
     }
 
+    /// Enables or disables printing iteration progress to stdout.
+    /// 
+    /// Useful for debugging the simulated annealing process or tracking 
+    /// convergence speed.
     pub fn set_verbose(&mut self, verbose: bool){
         self.verbose = verbose;
     }
@@ -510,6 +585,23 @@ impl PIAGlobal{
 
 
 impl Pixelizer for PIAPixelizer{
+    /// Applies the PIA algorithm to the input image.
+    ///
+    /// # Performance Note
+    /// Unlike K-Means, this algorithm runs an iterative simulated annealing process.
+    /// It is significantly slower. For large target dimensions (>128px), 
+    /// execution time may be high.
+    ///
+    /// # Constraints
+    /// * `num_colors` must be between 2 and 256.
+    /// # Process
+    /// 1. Converts image to CIELAB color space.
+    /// 2. Initializes superpixels on a grid.
+    /// 3. Iteratively refines superpixel shapes and the global color palette using Simulated Annealing.
+    /// 4. Renders the final image with the reduced palette.
+    ///
+    /// # Errors
+    /// Returns `PixelizationError::ColorError` if `num_colors` is not between 2 and 256.
     fn pixelize(&self, img: &DynamicImage, width : u32, height: u32,  num_colors : usize) -> Result<DynamicImage, PixelizationError>{
         if (num_colors < 2) || (num_colors > 256){
             return Err(PixelizationError::ColorError("Number of colors must be between 2 and 256".to_string()));
