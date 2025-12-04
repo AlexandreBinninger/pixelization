@@ -19,18 +19,19 @@ It implements advanced quantization algorithms, including:
 
 ### As a CLI Tool
 
+**⚠️ System Requirements (Read before installing):**
+This library uses `ndarray-linalg`, which requires a BLAS backend.
+* **Ubuntu/Debian:** `sudo apt update && sudo apt install pkg-config libssl-dev libopenblas-dev libx11-dev libxext-dev libxft-dev`
+* **macOS:** `brew install openblas`
+* **Windows:** You may need to install a pre-compiled LAPACK/BLAS binary or use `vcpkg`.
+
+
 You can install the binary directly from crates.io (once published) or from source:
 
 ```bash
 # From source
 cargo install --path . --features cli
 ```
-
-**⚠️ System Requirements (Read before installing):**
-This library uses `ndarray-linalg`, which requires a BLAS backend.
-* **Ubuntu/Debian:** `sudo apt update && sudo apt install pkg-config libssl-dev libopenblas-dev libx11-dev libxext-dev libxft-dev`
-* **macOS:** `brew install openblas`
-* **Windows:** You may need to install a pre-compiled LAPACK/BLAS binary or use `vcpkg`.
 
 ### As a Library
 
