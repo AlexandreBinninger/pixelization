@@ -38,7 +38,7 @@ Add this to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-pixelization = "0.1.0"
+pixelization = "0.1.1"
 ```
 
 
