@@ -13,7 +13,7 @@ It implements advanced quantization algorithms, including:
 
 | Original | K-Means | PIA |
 | :---: | :---: | :---: |
-| <img src="assets/images/ferris_3d.png" alt="Original" width="256" height="256"> | <img src="assets/images/ferris_3d_Kmeans.png" alt="KMeans" width="256" height="256" style="image-rendering: pixelated;"> | <img src="assets/images/ferris_3d_PIA.png" alt="PIA" width="256" height="256" style="image-rendering: pixelated;"> |
+| <img src="https://raw.githubusercontent.com/AlexandreBinninger/pixelization/refs/heads/main/assets/images/ferris_3d.png" alt="Original" width="256" height="256"> | <img src="https://github.com/AlexandreBinninger/pixelization/blob/main/assets/images/ferris_3d_Kmeans.png?raw=true" alt="KMeans" width="256" height="256" style="image-rendering: pixelated;"> | <img src="https://github.com/AlexandreBinninger/pixelization/blob/main/assets/images/ferris_3d_PIA.png?raw=true" alt="PIA" width="256" height="256" style="image-rendering: pixelated;"> |
 
 ## Installation
 
@@ -26,7 +26,7 @@ You can install the binary directly from crates.io (once published) or from sour
 cargo install --path . --features cli
 ```
 
-**System Requirements:**
+**⚠️ System Requirements (Read before installing):**
 This library uses `ndarray-linalg`, which requires a BLAS backend.
 * **Ubuntu/Debian:** `sudo apt-get install libopenblas-dev gfortran`
 * **macOS:** The Accelerate framework is usually built-in, but you may need `gfortran` (via brew).
@@ -39,6 +39,7 @@ Add this to your `Cargo.toml`:
 ```toml
 [dependencies]
 pixelization = "0.1.0"
+```
 
 
 ## Usage
@@ -51,9 +52,6 @@ pixelize input.jpg --scale 4 --n_colors 8
 
 # Using K-Means with specific output path
 pixelize input.jpg -o output.png --method kmeans --n_colors 16 --scale 2
-
-# Show the result in a window (requires --features cli)
-pixelize input.jpg --show
 ```
 
 ### Rust Code

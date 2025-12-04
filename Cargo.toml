@@ -10,7 +10,7 @@ keywords = ["pixel", "pixelization", "pixelation", "pixelize", "pixelate", "quan
 categories = ["graphics", "multimedia::images", "mathematics", "rendering"]
 license = "MIT"
 description = "An image quantization and pixelization library implementing K-Means and PIA (Pixelated Image Abstraction)."
-exclude = ["assets/*", ".gitignore"]
+exclude = ["assets/*", ".gitignore", ".git"]
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
